@@ -76,7 +76,13 @@ func (c *Coordinator) assignMapTask(args *CoordinatorTaskArgs, reply *Coordinato
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// if currentFileIndex < len(c.allFiles) {
+	// Check if there are any uncompleted tasks and assign to the current worker
+	if len(c.uncompletedTasks) > 0 {
+		*reply = c.uncompletedTasks[0]
+		c.uncompletedTasks = c.uncompletedTasks[1:]
+		go c.checkWorkerCompletion(*reply, currentFileIndex)
+		return nil
+	}
 	reply.TaskType = "Map"
 	reply.InputFile = c.allFiles[currentFileIndex]
 	reply.NReduce = c.numReduceTasks
@@ -85,9 +91,6 @@ func (c *Coordinator) assignMapTask(args *CoordinatorTaskArgs, reply *Coordinato
 	c.workers[currentFileIndex] = IN_PROGRESS
 	go c.checkWorkerCompletion(*reply, currentFileIndex)
 	currentFileIndex++
-	// } else {
-	// 	reply.AllTasksCompleted = true
-	// }
 
 	return nil
 }
