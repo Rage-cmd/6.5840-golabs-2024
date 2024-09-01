@@ -31,7 +31,7 @@ type CoordinatorTaskArgs struct {
 
 type CoordinatorTaskReply struct {
 	TaskType          string
-	InputFile         string
+	InputFiles        []string
 	AllTasksCompleted bool
 	NReduce           int
 	MapTaskID         int
