@@ -109,21 +109,26 @@ func Worker(mapf func(string, string) []KeyValue,
 			fmt.Println("[Worker] Number of intermediate files created: ", count)
 		} else {
 			fmt.Println("[Worker] Assign Task Recieved for files: ", reply.InputFiles)
-			intermediateKeys := readIntermediateFile(reply.InputFiles)
+			intermediatekva, err := readIntermediateFiles(reply.InputFiles)
+			if err != nil {
+				log.Fatalf("[Worker] Error in reading intermediate files: ", err)
+			}
+			oname := "mr-out-" + string(reply.MapTaskID)
+			ofile, _ := os.Create(oname)
 			i := 0
-			for i < len(intermediate) {
+			for i < len(intermediatekva) {
 				j := i + 1
-				for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+				for j < len(intermediatekva) && intermediatekva[j].Key == intermediatekva[i].Key {
 					j++
 				}
 				values := []string{}
 				for k := i; k < j; k++ {
-					values = append(values, intermediate[k].Value)
+					values = append(values, intermediatekva[k].Value)
 				}
-				output := reducef(intermediate[i].Key, values)
+				output := reducef(intermediatekva[i].Key, values)
 
 				// this is the correct format for each line of Reduce output.
-				fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+				fmt.Fprintf(ofile, "%v %v\n", intermediatekva[i].Key, output)
 
 				i = j
 			}
