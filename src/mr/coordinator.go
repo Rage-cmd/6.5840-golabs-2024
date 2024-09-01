@@ -17,15 +17,16 @@ type Coordinator struct {
 	//  - idle, -completed, -in-progress
 	// Location of the intermediary files or keys
 	// WorkerStates []WorkerState
-	numMapTasks      int
-	numReduceTasks   int
-	allFiles         []string
-	completed        bool
-	workers          []WorkerState
-	mu               sync.Mutex
-	uncompletedTasks []CoordinatorTaskReply
-	currentFileIndex int
-	currentWorkerID  int
+	numMapTasks          int
+	numReduceTasks       int
+	allFiles             []string
+	completed            bool
+	workers              []WorkerState
+	mu                   sync.Mutex
+	uncompletedTasks     []CoordinatorTaskReply
+	currentFileIndex     int
+	currentWorkerID      int
+	availableReduceTasks []int
 }
 
 type WorkerState int
@@ -54,6 +55,9 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 
 func (c *Coordinator) canAssignReduceTask() (bool, error) {
 	fmt.Println("[Coordinator] Checking if intermediate files are present")
+	if len(c.availableReduceTasks) > 0 {
+		return true, nil
+	}
 	return false, nil
 }
 
@@ -64,6 +68,8 @@ func (c *Coordinator) checkWorkerCompletion(assignedTask CoordinatorTaskReply, w
 	time.Sleep(10 * time.Second)
 	if c.workers[wokerID] == COMPLETED {
 		fmt.Printf("[Coordinator] Worker %d has completed the task\n", wokerID)
+		// Woker available to do the next task
+		c.workers[wokerID] = IDLE
 		return
 	}
 	// If the worker has not completed the task yet
@@ -87,7 +93,7 @@ func (c *Coordinator) assignMapTask(args *CoordinatorTaskArgs, reply *Coordinato
 		return nil
 	}
 	reply.TaskType = "Map"
-	reply.InputFile = c.allFiles[c.currentFileIndex]
+	reply.InputFiles = append(reply.InputFiles, c.allFiles[c.currentFileIndex])
 	reply.NReduce = c.numReduceTasks
 	reply.MapTaskID = c.currentWorkerID
 	c.workers[c.currentFileIndex] = IN_PROGRESS
@@ -99,10 +105,18 @@ func (c *Coordinator) assignMapTask(args *CoordinatorTaskArgs, reply *Coordinato
 
 	return nil
 }
+
+func (c *Coordinator) assignReduceTask(args *CoordinatorTaskArgs, reply *CoordinatorTaskReply) error {
+	return nil
+}
+
+// The worker calls this task when the task has been completed
 func (c *Coordinator) InformCompletion(arg *CoordinatorTaskArgs, reply *CoordinatorTaskReply) error {
 	fmt.Printf("[Coordinator] Worker %d has completed the task\n", arg.AssignedID)
 	c.workers[arg.AssignedID] = COMPLETED
 	fmt.Println("[Coordinator] Worker states", c.workers)
+	// Reduce task are now available for these keys
+	c.availableReduceTasks = append(c.availableReduceTasks, arg.AssignedID)
 	return nil
 }
 
@@ -111,14 +125,13 @@ func (c *Coordinator) InformCompletion(arg *CoordinatorTaskArgs, reply *Coordina
 // it returns relevant input file and task type
 func (c *Coordinator) AssignTask(args *CoordinatorTaskArgs, reply *CoordinatorTaskReply) error {
 	// TODO:
-	// clean the current before proceeding
-	// Add steps for selecting either a map or reduce task for the worker
 	// Make reduce task wait until a map task has been completed
 	fmt.Println("[Coordinator] Coordinator struct: ", c)
 	fmt.Println("[Coordinator] Assigning Tasks to the worker")
 
 	flag, nil := c.canAssignReduceTask()
 	if flag {
+
 		return nil
 	}
 

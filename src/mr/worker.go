@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
+	"strings"
 )
 
 // for sorting by key.
@@ -32,6 +33,25 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+func readIntermediateFiles(filenames []string) ([]KeyValue, error) {
+	keyValueArray := []KeyValue{}
+	for _, filename := range filenames {
+		file, err := os.ReadFile(filename)
+		if err != nil {
+			return nil, err
+		}
+		lines := strings.Split(string(file), "\n")
+		for _, line := range lines {
+			fields := strings.Split(line, " ")
+			if len(fields) != 2 {
+				return nil, fmt.Errorf("Intermediate key does not have 2 fields in the file %s", filename)
+			}
+			keyValueArray = append(keyValueArray, KeyValue{Key: fields[0], Value: fields[1]})
+		}
+	}
+	return keyValueArray, nil
+}
+
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
@@ -53,12 +73,12 @@ func Worker(mapf func(string, string) []KeyValue,
 			intermediateKeysMap := make(map[int][]KeyValue)
 
 			// read the contents of the file
-			content, err := ioutil.ReadFile(reply.InputFile)
+			content, err := ioutil.ReadFile(reply.InputFiles[0])
 			if err != nil {
-				log.Fatalf("cannot read %v", reply.InputFile)
+				log.Fatalf("cannot read %v", reply.InputFiles[0])
 			}
 
-			intermediateKeys := mapf(reply.InputFile, string(content))
+			intermediateKeys := mapf(reply.InputFiles[0], string(content))
 			fmt.Println("[Worker] First three intermediate keys: ", intermediateKeys[:3])
 			for i := 0; i < len(intermediateKeys); i++ {
 				hashValue := ihash(intermediateKeys[i].Key) % reply.NReduce
@@ -68,29 +88,45 @@ func Worker(mapf func(string, string) []KeyValue,
 			// save the intermediate keys in files with the naming convention
 			// mr-x-y
 			// where x is mapTaskID and y is the hashValue
-
-			// iterate over intermediateKeysMap
 			count := 0
 			for i := 0; i < len(intermediateKeysMap); i++ {
 				count += 1
 
 				sort.Sort(ByKey(intermediateKeysMap[i]))
-				// if i == 0 {
 				fileName := fmt.Sprintf("mr-%v-%v", reply.MapTaskID, i)
 				file, err := os.Create(fileName)
 				if err != nil {
 					log.Fatalf("Cannot create %v", fileName)
 				}
-				// fmt.Println("[Worker] All intermediate keys: ", intermediateKeysMap[i])
+
 				for j := 0; j < len(intermediateKeysMap[i]); j++ {
 					file.Write([]byte(intermediateKeysMap[i][j].Key + " " + intermediateKeysMap[i][j].Value + "\n"))
 				}
-				// }
 
 			}
 			args.AssignedID = reply.MapTaskID
 			call("Coordinator.InformCompletion", &args, &reply)
 			fmt.Println("[Worker] Number of intermediate files created: ", count)
+		} else {
+			fmt.Println("[Worker] Assign Task Recieved for files: ", reply.InputFiles)
+			intermediateKeys := readIntermediateFile(reply.InputFiles)
+			i := 0
+			for i < len(intermediate) {
+				j := i + 1
+				for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+					j++
+				}
+				values := []string{}
+				for k := i; k < j; k++ {
+					values = append(values, intermediate[k].Value)
+				}
+				output := reducef(intermediate[i].Key, values)
+
+				// this is the correct format for each line of Reduce output.
+				fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+
+				i = j
+			}
 		}
 		// uncomment to send the Example RPC to the coordinator.
 		// CallExample()
