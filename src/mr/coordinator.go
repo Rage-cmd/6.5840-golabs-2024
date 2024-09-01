@@ -2,6 +2,7 @@ package mr
 
 import (
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -17,16 +18,16 @@ type Coordinator struct {
 	//  - idle, -completed, -in-progress
 	// Location of the intermediary files or keys
 	// WorkerStates []WorkerState
-	numMapTasks          int
-	numReduceTasks       int
-	allFiles             []string
-	completed            bool
-	workers              []WorkerState
-	mu                   sync.Mutex
-	uncompletedTasks     []CoordinatorTaskReply
-	currentFileIndex     int
-	currentWorkerID      int
-	availableReduceTasks []int
+	numMapTasks            int
+	numReduceTasks         int
+	allFiles               []string
+	completed              bool
+	workers                []WorkerState
+	mu                     sync.Mutex
+	uncompletedTasks       []CoordinatorTaskReply
+	currentFileIndex       int
+	currentWorkerID        int
+	availableReduceTaskIDs []int
 }
 
 type WorkerState int
@@ -55,7 +56,7 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 
 func (c *Coordinator) canAssignReduceTask() (bool, error) {
 	fmt.Println("[Coordinator] Checking if intermediate files are present")
-	if len(c.availableReduceTasks) > 0 {
+	if len(c.availableReduceTaskIDs) > 0 {
 		return true, nil
 	}
 	return false, nil
@@ -107,7 +108,34 @@ func (c *Coordinator) assignMapTask(args *CoordinatorTaskArgs, reply *Coordinato
 }
 
 func (c *Coordinator) assignReduceTask(args *CoordinatorTaskArgs, reply *CoordinatorTaskReply) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	reduceTaskID := c.availableReduceTaskIDs[0]
+	c.availableReduceTaskIDs = c.availableReduceTaskIDs[1:]
+	fileRegex := "mr-" + string(reduceTaskID) + "-*"
+	reply.TaskType = "Reduce"
+	reply.InputFiles = getListOfFiles("./", fileRegex)
+	reply.MapTaskID = reduceTaskID // confusing statement but mapTaskID and ReduceTaskID can be the same
+	c.workers[c.currentWorkerID] = IN_PROGRESS
+	go c.checkWorkerCompletion(*reply, c.currentWorkerID)
+	c.currentWorkerID += 1
 	return nil
+}
+
+func getListOfFiles(directory string, keysToFind string) []string {
+	root := os.DirFS(directory)
+	files, err := fs.Glob(root, keysToFind)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return files
+	// outputFiles := []string{}
+	// for _, file := range files {
+	// 	outputFiles = append(outputFiles, file)
+	// }
+
 }
 
 // The worker calls this task when the task has been completed
@@ -116,7 +144,7 @@ func (c *Coordinator) InformCompletion(arg *CoordinatorTaskArgs, reply *Coordina
 	c.workers[arg.AssignedID] = COMPLETED
 	fmt.Println("[Coordinator] Worker states", c.workers)
 	// Reduce task are now available for these keys
-	c.availableReduceTasks = append(c.availableReduceTasks, arg.AssignedID)
+	c.availableReduceTaskIDs = append(c.availableReduceTaskIDs, arg.AssignedID)
 	return nil
 }
 

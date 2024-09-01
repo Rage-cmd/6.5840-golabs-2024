@@ -111,7 +111,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			fmt.Println("[Worker] Assign Task Recieved for files: ", reply.InputFiles)
 			intermediatekva, err := readIntermediateFiles(reply.InputFiles)
 			if err != nil {
-				log.Fatalf("[Worker] Error in reading intermediate files: ", err)
+				log.Fatalf("[Worker] Error in reading intermediate files: %v", err)
 			}
 			oname := "mr-out-" + string(reply.MapTaskID)
 			ofile, _ := os.Create(oname)
