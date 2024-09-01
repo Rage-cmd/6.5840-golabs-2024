@@ -24,6 +24,8 @@ type Coordinator struct {
 	workers          []WorkerState
 	mu               sync.Mutex
 	uncompletedTasks []CoordinatorTaskReply
+	currentFileIndex int
+	currentWorkerID  int
 }
 
 type WorkerState int
@@ -34,7 +36,7 @@ const (
 	COMPLETED
 )
 
-var currentFileIndex = 0
+// var currentFileIndex = 0
 
 // TODO:
 // complete the coordinator implementation
@@ -80,17 +82,20 @@ func (c *Coordinator) assignMapTask(args *CoordinatorTaskArgs, reply *Coordinato
 	if len(c.uncompletedTasks) > 0 {
 		*reply = c.uncompletedTasks[0]
 		c.uncompletedTasks = c.uncompletedTasks[1:]
-		go c.checkWorkerCompletion(*reply, currentFileIndex)
+		reply.MapTaskID = c.currentWorkerID
+		go c.checkWorkerCompletion(*reply, c.currentWorkerID)
 		return nil
 	}
 	reply.TaskType = "Map"
-	reply.InputFile = c.allFiles[currentFileIndex]
+	reply.InputFile = c.allFiles[c.currentFileIndex]
 	reply.NReduce = c.numReduceTasks
-	reply.MapTaskID = currentFileIndex
-	reply.AllTasksCompleted = false
-	c.workers[currentFileIndex] = IN_PROGRESS
-	go c.checkWorkerCompletion(*reply, currentFileIndex)
-	currentFileIndex++
+	reply.MapTaskID = c.currentWorkerID
+	c.workers[c.currentFileIndex] = IN_PROGRESS
+	// reply.AllTasksCompleted = false
+
+	c.currentWorkerID += 1
+	go c.checkWorkerCompletion(*reply, c.currentFileIndex)
+	c.currentFileIndex++
 
 	return nil
 }
@@ -123,7 +128,7 @@ func (c *Coordinator) AssignTask(args *CoordinatorTaskArgs, reply *CoordinatorTa
 		return err
 	}
 
-	if currentFileIndex == len(c.allFiles) {
+	if c.currentFileIndex == len(c.allFiles) {
 		reply.AllTasksCompleted = true
 		c.completed = true
 	}
@@ -168,6 +173,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.numReduceTasks = nReduce
 	c.allFiles = files
 	c.completed = false
+	c.currentFileIndex = 0
+	c.currentWorkerID = 0
 	// Your code here.
 
 	for i := 0; i < len(files); i++ {
