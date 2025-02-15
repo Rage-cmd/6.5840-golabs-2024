@@ -34,7 +34,9 @@ type CoordinatorTaskReply struct {
 	InputFiles        []string
 	AllTasksCompleted bool
 	NReduce           int
-	MapTaskID         int
+	TaskID            int
+	WorkerID          int
+	Terminate         bool
 }
 
 // Cook up a unique-ish UNIX-domain socket name

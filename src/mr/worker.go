@@ -55,9 +55,10 @@ func readIntermediateFiles(filenames []string) ([]KeyValue, error) {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-
+	fmt.Printf("[Worker] Worker started\n")
 	// Your worker implementation here.
 	args := CoordinatorTaskArgs{}
+	args.AssignedID = -1
 
 	reply := CoordinatorTaskReply{}
 
@@ -67,6 +68,8 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Add the case for a reduce task as well
 	// Clean the map code
 	if ok {
+		// Assign the worker a permanent ID
+		args.AssignedID = reply.WorkerID
 		if reply.TaskType == "Map" {
 			fmt.Println("[Worker] MAP Task received for file: ", reply)
 
@@ -93,7 +96,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				count += 1
 
 				sort.Sort(ByKey(intermediateKeysMap[i]))
-				fileName := fmt.Sprintf("mr-%v-%v", reply.MapTaskID, i)
+				fileName := fmt.Sprintf("mr-%v-%v", reply.TaskID, i)
 				file, err := os.Create(fileName)
 				if err != nil {
 					log.Fatalf("Cannot create %v", fileName)
@@ -104,8 +107,13 @@ func Worker(mapf func(string, string) []KeyValue,
 				}
 
 			}
-			args.AssignedID = reply.MapTaskID
+			// args.AssignedID = reply.TaskID
+			fmt.Printf("[Worker] Keys generated, informing the coordinator\n")
 			call("Coordinator.InformCompletion", &args, &reply)
+			if reply.Terminate {
+				fmt.Println("[Worker] Coordinator has asked to terminate %d.\n", args.AssignedID)
+				return
+			}
 			fmt.Println("[Worker] Number of intermediate files created: ", count)
 		} else {
 			fmt.Println("[Worker] Assign Task Recieved for files: ", reply.InputFiles)
@@ -113,7 +121,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			if err != nil {
 				log.Fatalf("[Worker] Error in reading intermediate files: %v", err)
 			}
-			oname := "mr-out-" + string(reply.MapTaskID)
+			oname := "mr-out-" + string(reply.TaskID)
 			ofile, _ := os.Create(oname)
 			i := 0
 			for i < len(intermediatekva) {

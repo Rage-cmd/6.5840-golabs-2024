@@ -10,8 +10,15 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/davecgh/go-spew/spew"
 )
 
+type Task struct {
+	Id    int
+	Type  string
+	Files []string
+}
 type Coordinator struct {
 	// Your definitions here.
 	// states of all the workers []
@@ -21,13 +28,15 @@ type Coordinator struct {
 	numMapTasks            int
 	numReduceTasks         int
 	allFiles               []string
-	completed              bool
+	mapCompleted           bool
+	reduceCompleted        bool
 	workers                []WorkerState
 	mu                     sync.Mutex
 	uncompletedTasks       []CoordinatorTaskReply
 	currentFileIndex       int
 	currentWorkerID        int
 	availableReduceTaskIDs []int
+	availableTasks         []Task
 }
 
 type WorkerState int
@@ -36,6 +45,7 @@ const (
 	IDLE WorkerState = iota
 	IN_PROGRESS
 	COMPLETED
+	DEAD
 )
 
 // var currentFileIndex = 0
@@ -64,82 +74,106 @@ func (c *Coordinator) canAssignReduceTask() (bool, error) {
 
 // This functions checks the state of the worker after 10 seconds
 // It returns true if the worker has successfully completed the task
-func (c *Coordinator) checkWorkerCompletion(assignedTask CoordinatorTaskReply, wokerID int) {
+func (c *Coordinator) checkWorkerCompletion(assignedTask Task, workerID int) {
 	// sleep for ten seconds
 	time.Sleep(10 * time.Second)
-	if c.workers[wokerID] == COMPLETED {
-		fmt.Printf("[Coordinator] Worker %d has completed the task\n", wokerID)
+	if c.workers[workerID] == IDLE {
+		return
+	}
+
+	// ------- Logging for debugging-----------
+	fmt.Printf("[Coordinator] Checking worker completion, Coordinator struct: \n")
+	spew.Dump(c)
+	// ----------------------------------------
+
+	if c.workers[workerID] == COMPLETED {
+		fmt.Printf("[Coordinator] Worker %d has completed the task\n", workerID)
 		// Woker available to do the next task
-		c.workers[wokerID] = IDLE
+		c.workers[workerID] = IDLE
 		return
 	}
 	// If the worker has not completed the task yet
 	// push the task to the list of uncompleted tasks
-	fmt.Printf("[Coordinator] Worker %d has not completed the task\n", wokerID)
+	fmt.Printf("[Coordinator] Worker %d has not completed the task and is considered dead.\n", workerID)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.uncompletedTasks = append(c.uncompletedTasks, assignedTask)
+	// c.availableTasks = append(c.availableTasks, assignedTask)
+	c.workers[workerID] = DEAD
 }
 
-func (c *Coordinator) assignMapTask(args *CoordinatorTaskArgs, reply *CoordinatorTaskReply) error {
+func (c *Coordinator) assignMapTask(args *CoordinatorTaskArgs, reply *CoordinatorTaskReply, task Task) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Check if there are any uncompleted tasks and assign to the current worker
-	if len(c.uncompletedTasks) > 0 {
-		*reply = c.uncompletedTasks[0]
-		c.uncompletedTasks = c.uncompletedTasks[1:]
-		reply.MapTaskID = c.currentWorkerID
-		go c.checkWorkerCompletion(*reply, c.currentWorkerID)
+	if c.currentFileIndex >= len(c.allFiles) {
+		c.mapCompleted = true
 		return nil
 	}
-	reply.TaskType = "Map"
-	reply.InputFiles = append(reply.InputFiles, c.allFiles[c.currentFileIndex])
-	reply.NReduce = c.numReduceTasks
-	reply.MapTaskID = c.currentWorkerID
-	c.workers[c.currentFileIndex] = IN_PROGRESS
-	// reply.AllTasksCompleted = false
 
-	c.currentWorkerID += 1
-	go c.checkWorkerCompletion(*reply, c.currentFileIndex)
-	c.currentFileIndex++
+	reply.TaskType = task.Type
+	reply.NReduce = c.numReduceTasks
+	reply.TaskID = task.Id
+	// c.workers[c.currentFileIndex] = IN_PROGRESS
+
+	// This is the case when the worker is assigned a fresh file that has never been assigned
+	if len(task.Files) == 0 {
+		task.Files = append(task.Files, c.allFiles[c.currentFileIndex])
+		c.currentFileIndex += 1
+	}
+
+	reply.InputFiles = task.Files
+	// // reply.AllTasksCompleted = false
+
+	if args.AssignedID == -1 {
+		// c.currentWorkerID += 1
+		args.AssignedID = len(c.workers)
+		reply.WorkerID = args.AssignedID
+		c.currentWorkerID = len(c.workers)
+		c.workers = append(c.workers, IN_PROGRESS)
+	}
+	fmt.Printf("[Coordinator] Map task assigned to worker: %d", args.AssignedID)
+	// c.workers[]
+	go c.checkWorkerCompletion(task, args.AssignedID)
 
 	return nil
 }
 
-func (c *Coordinator) assignReduceTask(args *CoordinatorTaskArgs, reply *CoordinatorTaskReply) error {
+func (c *Coordinator) assignReduceTask(args *CoordinatorTaskArgs, reply *CoordinatorTaskReply, task Task) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	reduceTaskID := c.availableReduceTaskIDs[0]
-	c.availableReduceTaskIDs = c.availableReduceTaskIDs[1:]
-	fileRegex := "mr-" + string(reduceTaskID) + "-*"
-	reply.TaskType = "Reduce"
+	// create reply struct using task info
+	reply.TaskID = task.Id
+	reply.TaskType = task.Type
+	fileRegex := "mr-" + string(task.Id) + "-*"
 	reply.InputFiles = getListOfFiles("./", fileRegex)
-	reply.MapTaskID = reduceTaskID // confusing statement but mapTaskID and ReduceTaskID can be the same
+	task.Files = reply.InputFiles
 	c.workers[c.currentWorkerID] = IN_PROGRESS
-	go c.checkWorkerCompletion(*reply, c.currentWorkerID)
-	c.currentWorkerID += 1
+	go c.checkWorkerCompletion(task, c.currentWorkerID)
+	if args.AssignedID == -1 {
+		c.currentWorkerID += 1
+	}
 	return nil
 }
 
 func getListOfFiles(directory string, keysToFind string) []string {
 	root := os.DirFS(directory)
+
 	files, err := fs.Glob(root, keysToFind)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	return files
-	// outputFiles := []string{}
-	// for _, file := range files {
-	// 	outputFiles = append(outputFiles, file)
-	// }
-
 }
 
 // The worker calls this task when the task has been completed
 func (c *Coordinator) InformCompletion(arg *CoordinatorTaskArgs, reply *CoordinatorTaskReply) error {
+	if c.workers[arg.AssignedID] == DEAD {
+		fmt.Printf("[Coordinator] Telling the worker %d to terminate as it is dead.\n", arg.AssignedID)
+		reply.Terminate = true
+		return nil
+	}
+
 	fmt.Printf("[Coordinator] Worker %d has completed the task\n", arg.AssignedID)
 	c.workers[arg.AssignedID] = COMPLETED
 	fmt.Println("[Coordinator] Worker states", c.workers)
@@ -157,13 +191,34 @@ func (c *Coordinator) AssignTask(args *CoordinatorTaskArgs, reply *CoordinatorTa
 	fmt.Println("[Coordinator] Coordinator struct: ", c)
 	fmt.Println("[Coordinator] Assigning Tasks to the worker")
 
-	flag, nil := c.canAssignReduceTask()
-	if flag {
-
+	if len(c.availableTasks) > 0 {
+		task := c.availableTasks[0]
+		c.availableTasks = c.availableTasks[1:]
+		if task.Type == "Reduce" {
+			err := c.assignReduceTask(args, reply, task)
+			if err != nil {
+				log.Fatalf("[Coordinator] Error in assigning reduce task")
+				return err
+			}
+			err = c.assignReduceTask(args, reply, task)
+			return nil
+		}
+		// If the execution reaches here, it means that the available tasks is
+		// if of the type "Map"
+		err := c.assignMapTask(args, reply, task)
+		if err != nil {
+			log.Fatalf("[Coordinator] Error in assigning reduce task")
+			return err
+		}
 		return nil
 	}
 
-	err := c.assignMapTask(args, reply)
+	task := Task{
+		Id:    c.currentWorkerID,
+		Type:  "Map",
+		Files: []string{},
+	}
+	err := c.assignMapTask(args, reply, task)
 	if err != nil {
 		fmt.Println("[Coordinator] Error in assigning map task")
 		return err
@@ -171,7 +226,7 @@ func (c *Coordinator) AssignTask(args *CoordinatorTaskArgs, reply *CoordinatorTa
 
 	if c.currentFileIndex == len(c.allFiles) {
 		reply.AllTasksCompleted = true
-		c.completed = true
+		c.mapCompleted = true
 	}
 	fmt.Println("[Coordinator] MAP task assigned")
 	return nil
@@ -201,7 +256,7 @@ func (c *Coordinator) Done() bool {
 	// ret := c.completed
 	ret := false
 	// Your code here.
-	fmt.Println("[Coordinator] Tasks Completed: ", c.completed)
+	fmt.Println("[Coordinator] Tasks Completed: ", c.mapCompleted || c.reduceCompleted)
 
 	return ret
 }
@@ -213,14 +268,18 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 	c.numReduceTasks = nReduce
 	c.allFiles = files
-	c.completed = false
+	c.mapCompleted = false
+	c.reduceCompleted = false
 	c.currentFileIndex = 0
 	c.currentWorkerID = 0
 	// Your code here.
 
-	for i := 0; i < len(files); i++ {
-		c.workers = append(c.workers, IDLE)
-	}
+	// Doubtful as the number of workers need not equal
+	// the number of input files????
+	// what was I thinking?
+	// for i := 0; i < len(files); i++ {
+	// 	c.workers = append(c.workers, IDLE)
+	// }
 
 	c.server()
 	return &c
