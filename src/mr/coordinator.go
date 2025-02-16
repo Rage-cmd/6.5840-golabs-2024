@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -25,18 +26,27 @@ type Coordinator struct {
 	//  - idle, -completed, -in-progress
 	// Location of the intermediary files or keys
 	// WorkerStates []WorkerState
-	numMapTasks            int
+
+	// Related to Map tasks
+	numMapTasks         int
+	mapCompleted        bool
+	completedMapTaskIDs []int
+
+	// Related to Reduce tasks
 	numReduceTasks         int
-	allFiles               []string
-	mapCompleted           bool
 	reduceCompleted        bool
-	workers                []WorkerState
-	mu                     sync.Mutex
-	uncompletedTasks       []CoordinatorTaskReply
-	currentFileIndex       int
-	currentWorkerID        int
 	availableReduceTaskIDs []int
-	availableTasks         []Task
+	completedReduceTaskIDs []int
+
+	// Related to general tasks and workers
+	allFiles         []string
+	workers          []WorkerState
+	mu               sync.Mutex
+	uncompletedTasks []CoordinatorTaskReply
+	currentFileIndex int
+	currentWorkerID  int
+	taskCounter      int
+	availableTasks   []Task
 }
 
 type WorkerState int
@@ -77,7 +87,16 @@ func (c *Coordinator) canAssignReduceTask() (bool, error) {
 func (c *Coordinator) checkWorkerCompletion(assignedTask Task, workerID int) {
 	// sleep for ten seconds
 	time.Sleep(10 * time.Second)
-	if c.workers[workerID] == IDLE {
+	// if c.workers[workerID] == IDLE {
+	// 	return
+	// }
+
+	// if the assigned task id is in the list of completed tasks, then simply return
+	if assignedTask.Type == "Map" && slices.Contains(c.completedMapTaskIDs, assignedTask.Id) {
+		return
+	}
+
+	if assignedTask.Type == "Reduce" && slices.Contains(c.completedReduceTaskIDs, assignedTask.Id) {
 		return
 	}
 
@@ -86,19 +105,24 @@ func (c *Coordinator) checkWorkerCompletion(assignedTask Task, workerID int) {
 	spew.Dump(c)
 	// ----------------------------------------
 
-	if c.workers[workerID] == COMPLETED {
-		fmt.Printf("[Coordinator] Worker %d has completed the task\n", workerID)
-		// Woker available to do the next task
-		c.workers[workerID] = IDLE
-		return
-	}
+	// if c.workers[workerID] == COMPLETED {
+	// 	fmt.Printf("[Coordinator] Worker %d has completed the task\n", workerID)
+	// 	// Woker available to do the next task
+	// 	c.mu.Lock()
+	// 	c.workers[workerID] = IDLE
+	// 	c.mu.Unlock()
+	// 	return
+	// }
 	// If the worker has not completed the task yet
 	// push the task to the list of uncompleted tasks
 	fmt.Printf("[Coordinator] Worker %d has not completed the task and is considered dead.\n", workerID)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// c.availableTasks = append(c.availableTasks, assignedTask)
+	// it can also happen that the worker has completed the first task and started a new one
+	// in that case the first task will be considered incomplete and it will be reassigned
 	c.workers[workerID] = DEAD
+	c.availableTasks = append(c.availableTasks, assignedTask)
 }
 
 func (c *Coordinator) assignMapTask(args *CoordinatorTaskArgs, reply *CoordinatorTaskReply, task Task) error {
@@ -144,7 +168,7 @@ func (c *Coordinator) assignReduceTask(args *CoordinatorTaskArgs, reply *Coordin
 	// create reply struct using task info
 	reply.TaskID = task.Id
 	reply.TaskType = task.Type
-	fileRegex := "mr-" + string(task.Id) + "-*"
+	fileRegex := "mr-" + string(rune(task.Id)) + "-*"
 	reply.InputFiles = getListOfFiles("./", fileRegex)
 	task.Files = reply.InputFiles
 	c.workers[c.currentWorkerID] = IN_PROGRESS
@@ -175,10 +199,29 @@ func (c *Coordinator) InformCompletion(arg *CoordinatorTaskArgs, reply *Coordina
 	}
 
 	fmt.Printf("[Coordinator] Worker %d has completed the task\n", arg.AssignedID)
-	c.workers[arg.AssignedID] = COMPLETED
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.workers[arg.AssignedID] = IDLE
 	fmt.Println("[Coordinator] Worker states", c.workers)
+	inputFiles := []string{}
+	for i := 0; i < c.numReduceTasks; i++ {
+		inputFiles = append(inputFiles, "mr-"+string(rune(arg.AssignedID))+"-"+fmt.Sprint(i))
+	}
+	newReduceTask := Task{
+		Id:    arg.AssignedID,
+		Type:  "Reduce",
+		Files: inputFiles,
+	}
 	// Reduce task are now available for these keys
-	c.availableReduceTaskIDs = append(c.availableReduceTaskIDs, arg.AssignedID)
+	// c.availableReduceTaskIDs = append(c.availableReduceTaskIDs, arg.AssignedID)
+	c.availableTasks = append(c.availableTasks, newReduceTask)
+	if arg.TaskType == "Map" {
+		c.completedMapTaskIDs = append(c.completedMapTaskIDs, arg.TaskID)
+	} else {
+		c.completedReduceTaskIDs = append(c.completedReduceTaskIDs, arg.TaskID)
+	}
+
 	return nil
 }
 
@@ -201,7 +244,7 @@ func (c *Coordinator) AssignTask(args *CoordinatorTaskArgs, reply *CoordinatorTa
 				return err
 			}
 			err = c.assignReduceTask(args, reply, task)
-			return nil
+			return err
 		}
 		// If the execution reaches here, it means that the available tasks is
 		// if of the type "Map"
@@ -272,6 +315,10 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.reduceCompleted = false
 	c.currentFileIndex = 0
 	c.currentWorkerID = 0
+	c.availableTasks = []Task{}
+	c.completedMapTaskIDs = []int{}
+	c.completedReduceTaskIDs = []int{}
+	c.taskCounter = 0
 	// Your code here.
 
 	// Doubtful as the number of workers need not equal
