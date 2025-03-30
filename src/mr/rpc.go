@@ -26,7 +26,11 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 type CoordinatorTaskArgs struct {
-	AssignedID int
+	AssignedID   int
+	TaskType     string
+	TaskID       int
+	MapFileID    int
+	CreatedFiles []string
 }
 
 type CoordinatorTaskReply struct {
@@ -34,6 +38,7 @@ type CoordinatorTaskReply struct {
 	InputFiles        []string
 	AllTasksCompleted bool
 	NReduce           int
+	MapFileID         int
 	TaskID            int
 	WorkerID          int
 	Terminate         bool
